@@ -6,6 +6,7 @@
     "dev": "node scripts/build-offline.mjs && next dev",
     "build": "node scripts/build-offline.mjs && next build",
     "start": "next start",
+    "start:local": "node scripts/start-local.mjs",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
     "test": "vitest run",

@@ -240,6 +240,14 @@ is missing, the dev server stops with setup instructions. Restart `pnpm dev`
 after changing the root env file. Production continues to use its deployment
 environment.
 
+`pnpm dev` listens on every network interface. To run the production build on
+this computer only (loopback, port 3000), with the same root `.env`:
+
+```bash
+pnpm build
+pnpm start:local
+```
+
 Open [http://localhost:3000](http://localhost:3000) and sign in with the demo credentials:
 
 | Role         | Email                                     | Password    |
