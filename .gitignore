@@ -57,3 +57,6 @@ package-lock.json
 /supabase/.temp/
 # Generated public-only offline shell; built from apps/web/offline on build/dev.
 apps/web/public/offline/
+
+# Synthetic dataset answer keys and validation reports (regenerable; keep out of the repo)
+synthetic-output/
