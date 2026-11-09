@@ -825,7 +825,7 @@ const sections: Section[] = [
           "Create an API key for REST integrations. The raw key is returned once and is never stored in plaintext. The agent:write scope must be paired with agent:run or *.",
         input: `{
   name: string,
-  scopes: Array<"clients:read" | "patients:read" | "appointments:read" | "appointments:write" | "records:write" | "agent:run" | "agent:write" | "*">
+  scopes: Array<"clients:read" | "patients:read" | "appointments:read" | "appointments:write" | "records:read" | "records:write" | "billing:read" | "catalog:read" | "inventory:read" | "agent:run" | "agent:write" | "*">
 }`,
         response: `{ ...ApiKey, key: string }`,
         auth: "Admin only",
@@ -928,6 +928,96 @@ const sections: Section[] = [
 }`,
         response: `{ data: SoapNote }`,
         auth: "API key: records:write",
+      },
+      {
+        name: "GET /api/v1/soap-notes",
+        method: "GET",
+        description:
+          "List finalized SOAP notes with addenda, entered-in-error corrections and replacement links. changed_at includes addenda and corrections, so updated_since detects amendments. Keyset-paged by (changed_at, id); single records via /:id where available.",
+        input: `?limit=100&cursor=next_cursor&updated_since=ISO-timestamp&include_deleted=true&patient_id=uuid&appointment_id=uuid`,
+        response: `{ data: T[], pagination: { limit, next_cursor, has_more, total } }`,
+        auth: "API key: records:read",
+      },
+      {
+        name: "GET /api/v1/prescriptions",
+        method: "GET",
+        description:
+          "List prescriptions (orders) with lifecycle events. supply is clinic_stock or written; neither proves supply: see dispensing events. Keyset-paged by (changed_at, id); single records via /:id where available.",
+        input: `?limit=100&cursor=next_cursor&updated_since=ISO-timestamp&include_deleted=true&patient_id=uuid&product_id=uuid`,
+        response: `{ data: T[], pagination: { limit, next_cursor, has_more, total } }`,
+        auth: "API key: records:read",
+      },
+      {
+        name: "GET /api/v1/dispensing-events",
+        method: "GET",
+        description:
+          "List actual supply from clinic stock (initial dispense and refills) with the billing state of each dispense charge. Keyset-paged by (changed_at, id); single records via /:id where available.",
+        input: `?limit=100&cursor=next_cursor&updated_since=ISO-timestamp&include_deleted=true&prescription_id=uuid&patient_id=uuid&product_id=uuid&invoice_id=uuid`,
+        response: `{ data: T[], pagination: { limit, next_cursor, has_more, total } }`,
+        auth: "API key: inventory:read",
+      },
+      {
+        name: "GET /api/v1/stock-movements",
+        method: "GET",
+        description:
+          "List stock adjustments and receipts, dispensing, and product sales on invoices, with signed quantity changes. Keyset-paged by (changed_at, id); single records via /:id where available.",
+        input: `?limit=100&cursor=next_cursor&updated_since=ISO-timestamp&include_deleted=true&product_id=uuid`,
+        response: `{ data: T[], pagination: { limit, next_cursor, has_more, total } }`,
+        auth: "API key: inventory:read",
+      },
+      {
+        name: "GET /api/v1/invoices",
+        method: "GET",
+        description:
+          "List invoices with current lines and totals. changed_at includes lines, payments and adjustments. Keyset-paged by (changed_at, id); single records via /:id where available.",
+        input: `?limit=100&cursor=next_cursor&updated_since=ISO-timestamp&include_deleted=true&client_id=uuid&patient_id=uuid&appointment_id=uuid`,
+        response: `{ data: T[], pagination: { limit, next_cursor, has_more, total } }`,
+        auth: "API key: billing:read",
+      },
+      {
+        name: "GET /api/v1/invoice-lines",
+        method: "GET",
+        description:
+          "List invoice lines. Re-saved charges appear as tombstones (deleted_at) plus new lines with include_deleted=true. Keyset-paged by (changed_at, id); single records via /:id where available.",
+        input: `?limit=100&cursor=next_cursor&updated_since=ISO-timestamp&include_deleted=true&invoice_id=uuid&item_id=uuid`,
+        response: `{ data: T[], pagination: { limit, next_cursor, has_more, total } }`,
+        auth: "API key: billing:read",
+      },
+      {
+        name: "GET /api/v1/payments",
+        method: "GET",
+        description:
+          "List payments with amount, method and received time. Keyset-paged by (changed_at, id); single records via /:id where available.",
+        input: `?limit=100&cursor=next_cursor&updated_since=ISO-timestamp&include_deleted=true&invoice_id=uuid`,
+        response: `{ data: T[], pagination: { limit, next_cursor, has_more, total } }`,
+        auth: "API key: billing:read",
+      },
+      {
+        name: "GET /api/v1/invoice-adjustments",
+        method: "GET",
+        description:
+          "List invoice credits and write-offs. Keyset-paged by (changed_at, id); single records via /:id where available.",
+        input: `?limit=100&cursor=next_cursor&updated_since=ISO-timestamp&include_deleted=true&invoice_id=uuid`,
+        response: `{ data: T[], pagination: { limit, next_cursor, has_more, total } }`,
+        auth: "API key: billing:read",
+      },
+      {
+        name: "GET /api/v1/products",
+        method: "GET",
+        description:
+          "List products with price, cost and current stock. Keyset-paged by (changed_at, id); single records via /:id where available.",
+        input: `?limit=100&cursor=next_cursor&updated_since=ISO-timestamp&include_deleted=true&location_id=uuid`,
+        response: `{ data: T[], pagination: { limit, next_cursor, has_more, total } }`,
+        auth: "API key: catalog:read",
+      },
+      {
+        name: "GET /api/v1/services",
+        method: "GET",
+        description:
+          "List billable services with default price. Keyset-paged by (changed_at, id); single records via /:id where available.",
+        input: `?limit=100&cursor=next_cursor&updated_since=ISO-timestamp&include_deleted=true`,
+        response: `{ data: T[], pagination: { limit, next_cursor, has_more, total } }`,
+        auth: "API key: catalog:read",
       },
       {
         name: "POST /api/v1/agent",

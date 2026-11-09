@@ -67,6 +67,11 @@ jobs:
         env:
           OFFLINE_WORKSPACE_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/offline-workspace.integration.test.ts
+      - name: Verify extraction API incremental sync
+        if: matrix.test == 'golden-clinic'
+        env:
+          EXTRACTION_SYNC_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/extraction-sync.integration.test.ts
       - if: matrix.test == 'newsletter'
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/newsletter-delivery.integration.test.ts
 

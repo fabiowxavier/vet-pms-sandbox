@@ -22,6 +22,8 @@ import {
   normalizeSoapSection,
 } from "@/lib/records/soap-content";
 import { assertActivePractice } from "@/lib/compat/shared/active-practice";
+import { listRoute } from "@/lib/compat/shared/extraction";
+import { soapNotesResource } from "@/lib/compat/openvpm/extraction-resources";
 import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
 import { hasUnresolvedSoapTemplatePrompts } from "@/lib/records/soap-templates";
 import {
@@ -30,6 +32,10 @@ import {
 } from "@/lib/records/soap-lifecycle";
 
 export const dynamic = "force-dynamic";
+
+// GET /api/v1/soap-notes — list finalized notes with addenda and correction
+// history (records:read). See lib/compat/shared/extraction.ts.
+export const GET = listRoute(soapNotesResource);
 
 const AUTHOR_REQUIRED_MESSAGE =
   "author_id is required when the appointment has no assigned doctor.";
