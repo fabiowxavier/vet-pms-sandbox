@@ -92,6 +92,48 @@ describe("synthetic data generator", () => {
     ).toBe(false);
   });
 
+  it("books every appointment before it starts and cancels before the start", () => {
+    for (const plan3 of [plan, buildPlan({ ...sample, startDate: "2025-01-01", endDate: "2025-06-30" })]) {
+      for (const a of plan3.rows.appointments) {
+        const created = (a.createdAt as Date).getTime();
+        const start = (a.startTime as Date).getTime();
+        expect(created).toBeLessThanOrEqual(start - 15 * 60_000);
+        expect((a.updatedAt as Date).getTime()).toBeGreaterThanOrEqual(created);
+        if (a.status === "cancelled") expect((a.updatedAt as Date).getTime()).toBeLessThanOrEqual(start);
+      }
+    }
+  });
+
+  it("records stock receipts whose quantity_after matches the time-ordered balance", () => {
+    const longer = buildPlan(PRESETS["three-year"]!);
+    expect(longer.rows.stockAdjustments.length).toBeGreaterThan(0);
+    const productSku = new Map(longer.rows.products.map((p) => [p.id, p.sku!]));
+    const opening = Object.fromEntries(Object.entries(longer.facts.stock).map(([sku, s]) => [sku, s.opening]));
+    type Move = { sku: string; at: number; receipt: boolean; quantity: number; after?: number };
+    const moves: Move[] = [
+      ...longer.rows.stockAdjustments.map((a) => ({ sku: productSku.get(a.productId)!, at: (a.createdAt as Date).getTime(), receipt: true, quantity: Number(a.adjustment), after: Number(a.quantityAfter) })),
+      ...longer.rows.prescriptionEvents
+        .filter((e) => e.productId && (e.eventType === "created" || e.eventType === "refill_dispensed"))
+        .map((e) => ({ sku: productSku.get(e.productId!)!, at: (e.createdAt as Date).getTime(), receipt: false, quantity: Number(e.quantity) })),
+      ...longer.rows.invoiceItems
+        .filter((i) => i.itemType === "product" && !i.sourceDispenseChargeId)
+        .map((i) => ({ sku: productSku.get(i.itemId!)!, at: (i.createdAt as Date).getTime(), receipt: false, quantity: Number(i.quantity) })),
+    ].sort((a, b) => (a.sku < b.sku ? -1 : a.sku > b.sku ? 1 : a.at - b.at || Number(b.receipt) - Number(a.receipt)));
+    const balance: Record<string, number> = { ...opening };
+    for (const m of moves) {
+      balance[m.sku] = balance[m.sku]! + (m.receipt ? m.quantity : -m.quantity);
+      expect(balance[m.sku]).toBeGreaterThanOrEqual(0);
+      if (m.receipt) expect(m.after).toBe(balance[m.sku]);
+    }
+  });
+
+  it("rejects a malformed answer key before querying", async () => {
+    const { assertWellFormedAnswerKey } = await import("../validate");
+    expect(() => assertWellFormedAnswerKey(expected)).not.toThrow();
+    const tampered = { ...expected, meta: { ...expected.meta, practiceId: "x'; drop table practices; --" } };
+    expect(() => assertWellFormedAnswerKey(tampered)).toThrow(/malformed/);
+  });
+
   it("generates only companion species", () => {
     const species = new Set(plan.rows.patients.map((p) => p.species));
     for (const herd of ["bovine", "ovine", "caprine", "porcine", "poultry", "camelid", "equine"]) {

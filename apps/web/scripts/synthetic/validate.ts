@@ -254,6 +254,72 @@ export async function invariantChecks(db: Database, expected: ExpectedResults): 
     detail: stockBad.length ? JSON.stringify(stockBad.slice(0, 3)) : "closing = opening + receipts - dispensed - retail for every product",
   });
 
+  // Replay every stock movement in time order (receipts first at equal times):
+  // stock never goes negative and each receipt's quantity_after is the balance.
+  const movements = await q<{ sku: string; at: string; kind: string; quantity: number; after: number | null }>(
+    db,
+    sql.raw(`
+      select * from (
+      select pr.sku, a.created_at as ts, a.created_at::text as at, 'receipt' as kind, a.adjustment::float8 as quantity, a.quantity_after::float8 as after
+        from inventory_stock_adjustments a join products pr on pr.id = a.product_id where a.practice_id = ${p}
+      union all
+      select pr.sku, e.created_at, e.created_at::text, 'dispensed', e.quantity::float8, null
+        from prescription_events e join products pr on pr.id = e.product_id
+        where e.practice_id = ${p} and e.event_type in ('created','refill_dispensed')
+      union all
+      select pr.sku, i.created_at, i.created_at::text, 'retail', i.quantity::float8, null
+        from invoice_items i join invoices v on v.id = i.invoice_id join products pr on pr.id = i.item_id
+        where v.practice_id = ${p} and i.item_type = 'product' and i.source_dispense_charge_id is null and v.status <> 'void'
+      ) m order by sku, ts, (kind = 'receipt') desc`),
+  );
+  const balance = new Map<string, number>();
+  const ledgerProblems: string[] = [];
+  for (const m of movements) {
+    const before = balance.get(m.sku) ?? opening[m.sku]!;
+    const after = m.kind === "receipt" ? before + m.quantity : before - m.quantity;
+    if (after < 0) ledgerProblems.push(`${m.sku} negative (${after}) at ${m.at}`);
+    if (m.kind === "receipt" && m.after !== after) ledgerProblems.push(`${m.sku} receipt at ${m.at} records ${m.after}, balance ${after}`);
+    balance.set(m.sku, after);
+  }
+  checks.push({
+    name: "stock_ledger_in_time_order",
+    ok: ledgerProblems.length === 0,
+    detail: ledgerProblems.length
+      ? ledgerProblems.slice(0, 3).join("; ")
+      : `${movements.length} movements replayed in time order: stock never negative; every receipt's quantity_after matches`,
+  });
+
+  // Events must happen in a plausible order, not merely inside the window.
+  const orderingTables = [
+    "appointments", "soap_notes", "invoices", "prescriptions", "lab_results", "visit_closeouts",
+    "visit_work_items", "dispense_charge_queue", "products", "clients", "patients", "vaccination_records",
+  ];
+  const orderingProblems: string[] = [];
+  for (const table of orderingTables) {
+    const [row] = await q<{ n: number }>(db, sql.raw(`select count(*)::int as n from ${table} where practice_id = ${p} and updated_at < created_at`));
+    if (row!.n) orderingProblems.push(`${table}: ${row!.n} updated before created`);
+  }
+  const orderingQueries: [string, string][] = [
+    ["appointments booked after they started", `select count(*)::int as n from appointments where practice_id = ${p} and created_at > start_time`],
+    ["cancellations after the appointment start", `select count(*)::int as n from appointments where practice_id = ${p} and status = 'cancelled' and updated_at > start_time`],
+    ["appointments booked before the patient was registered", `select count(*)::int as n from appointments a join patients pt on pt.id = a.patient_id where a.practice_id = ${p} and a.created_at < pt.created_at`],
+    ["notes started before the visit", `select count(*)::int as n from soap_notes s join appointments a on a.id = s.appointment_id where s.practice_id = ${p} and (s.created_at < a.start_time or s.finalized_at < s.created_at)`],
+    ["visit invoices issued before the visit ended", `select count(*)::int as n from invoices i join appointments a on a.id = i.appointment_id where i.practice_id = ${p} and i.created_at < a.end_time`],
+    ["payments received before the invoice", `select count(*)::int as n from payments pm join invoices i on i.id = pm.invoice_id where i.practice_id = ${p} and pm.received_at < i.created_at`],
+    ["prescription events before the prescription", `select count(*)::int as n from prescription_events e join prescriptions r on r.id = e.prescription_id where e.practice_id = ${p} and e.created_at < r.created_at`],
+    ["closeouts completed before clinical finalization", `select count(*)::int as n from visit_closeouts where practice_id = ${p} and completed_at < clinical_finalized_at`],
+    ["follow-ups not after the original visit", `select count(*)::int as n from visit_closeouts c join appointments a on a.id = c.appointment_id join appointments f on f.id = c.follow_up_appointment_id where c.practice_id = ${p} and f.start_time <= a.end_time`],
+  ];
+  for (const [label, query] of orderingQueries) {
+    const [row] = await q<{ n: number }>(db, sql.raw(query));
+    if (row!.n) orderingProblems.push(`${label}: ${row!.n}`);
+  }
+  checks.push({
+    name: "event_ordering",
+    ok: orderingProblems.length === 0,
+    detail: orderingProblems.length ? orderingProblems.join("; ") : "bookings precede visits, updates follow creation, and notes, invoices, payments, events and follow-ups occur in order",
+  });
+
   const timestampColumns: [string, string[], string][] = [
     ["appointments", ["created_at", "updated_at", "start_time", "end_time"], `practice_id = ${p}`],
     ["soap_notes", ["created_at", "updated_at", "finalized_at"], `practice_id = ${p}`],
@@ -384,7 +450,27 @@ export async function discrepancyDetectors(db: Database, expected: ExpectedResul
   return results;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * The answer key is a local file, and its fields are interpolated into SQL
+ * below. Reject anything that is not the expected shape before querying.
+ */
+export function assertWellFormedAnswerKey(expected: ExpectedResults): void {
+  const { meta, reference } = expected;
+  const problems: string[] = [];
+  if (!UUID_PATTERN.test(meta?.practiceId ?? "")) problems.push("meta.practiceId");
+  if (!/^[A-Za-z0-9_+/-]{1,64}$/.test(meta?.timezone ?? "")) problems.push("meta.timezone");
+  if (Number.isNaN(Date.parse(meta?.asOf ?? "")) || !/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(meta.asOf)) problems.push("meta.asOf");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(meta?.goLiveDate ?? "")) problems.push("meta.goLiveDate");
+  if (!Array.isArray(reference?.prescriptionOnlyProductIds) || !reference.prescriptionOnlyProductIds.every((id) => UUID_PATTERN.test(id))) {
+    problems.push("reference.prescriptionOnlyProductIds");
+  }
+  if (problems.length) throw new Error(`Expected-results file is malformed (${problems.join(", ")}); regenerate it.`);
+}
+
 export async function validateDataset(db: Database, expected: ExpectedResults) {
+  assertWellFormedAnswerKey(expected);
   const [practice] = await q<{ ok: number }>(
     db,
     sql`select 1 as ok from practices where id = ${expected.meta.practiceId}::uuid and settings #>> '{syntheticDataset,datasetId}' = ${expected.meta.datasetId}`,

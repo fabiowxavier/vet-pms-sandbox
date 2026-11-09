@@ -527,7 +527,15 @@ export function buildPlan(config: SyntheticConfig): Plan {
   const slotKey = (date: CalendarDate, vet: VetKey, minute: number) => `${date}|${vet}|${minute}`;
   const vetWorks = (vet: VetKey, date: CalendarDate) => VET_SCHEDULE[vet].includes(dayOfWeek(date));
 
-  function findSlot(date: CalendarDate, preferred: VetKey | null, rng: Rng): { vet: VetKey; minute: number } | null {
+  /** Minimum gap between making a booking and the appointment starting. */
+  const MIN_BOOKING_LEAD_MS = 15 * 60_000;
+
+  function findSlot(
+    date: CalendarDate,
+    preferred: VetKey | null,
+    rng: Rng,
+    bookedAt: Date,
+  ): { vet: VetKey; minute: number } | null {
     if (!isOpenDay(date)) return null;
     const vets = rng.shuffle(VET_KEYS.filter((v) => vetWorks(v, date)));
     if (preferred && vets.includes(preferred)) vets.unshift(...vets.splice(vets.indexOf(preferred), 1));
@@ -535,6 +543,8 @@ export function buildPlan(config: SyntheticConfig): Plan {
       const offset = rng.int(0, SLOT_MINUTES.length - 1);
       for (let i = 0; i < SLOT_MINUTES.length; i++) {
         const minute = SLOT_MINUTES[(offset + i) % SLOT_MINUTES.length]!;
+        // A same-day booking can only take a slot that starts after it was made.
+        if (at(date, minute).getTime() - bookedAt.getTime() < MIN_BOOKING_LEAD_MS) continue;
         if (!occupied.has(slotKey(date, vet, minute))) return { vet, minute };
       }
     }
@@ -545,7 +555,7 @@ export function buildPlan(config: SyntheticConfig): Plan {
     for (let tries = 0; tries < 6; tries++) {
       const day = nextOpenDay(addDays(date, tries));
       if (day > config.endDate) return null;
-      const slot = findSlot(day, preferred, demandRng);
+      const slot = findSlot(day, preferred, demandRng, bookedAt);
       if (!slot) continue;
       occupied.add(slotKey(day, slot.vet, slot.minute));
       const booking: Booking = { pet, date: day, vet: slot.vet, minute: slot.minute, kind, bookedAt, context };
@@ -868,8 +878,9 @@ export function buildPlan(config: SyntheticConfig): Plan {
     const status: VisitFact["status"] = cancelRoll < 0.05 ? "cancelled" : cancelRoll < 0.08 ? "no_show" : "checked_out";
     let updatedAt = addMinutes(end, 20);
     if (status === "cancelled") {
-      const cancelledAt = new Date(Math.max(booking.bookedAt.getTime() + 60_000, start.getTime() - rng.int(2, 72) * 3_600_000));
-      updatedAt = cancelledAt > start ? addMinutes(start, -30) : cancelledAt;
+      // Bookings are made at least 15 minutes ahead, so the cancellation always
+      // falls after the booking and before the appointment.
+      updatedAt = new Date(Math.max(booking.bookedAt.getTime() + 60_000, start.getTime() - rng.int(2, 72) * 3_600_000));
     } else if (status === "no_show") {
       updatedAt = addMinutes(start, 45);
     }
@@ -1331,7 +1342,7 @@ export function buildPlan(config: SyntheticConfig): Plan {
     }
 
     // Run the day's appointments in time order.
-    const today = (bookings.get(date) ?? []).sort((a, b) => a.minute - b.minute || a.vet.localeCompare(b.vet));
+    const today = (bookings.get(date) ?? []).sort((a, b) => a.minute - b.minute || (a.vet < b.vet ? -1 : a.vet > b.vet ? 1 : 0));
     for (const booking of today) {
       runVisit(booking);
       const appointmentId = rows.appointments.at(-1)!.id!;
@@ -1393,7 +1404,12 @@ export function buildPlan(config: SyntheticConfig): Plan {
         receive(pendingReceipt);
         pendingReceipt = null;
       }
-      while (stock < move.quantity) receive(addMinutes(move.at, -30));
+      // Emergency receipt just before the movement, never before the previous one,
+      // so recorded quantity_after values stay in time order.
+      while (stock < move.quantity) {
+        const earliest = Math.max(lastChange.getTime() + 1, addMinutes(move.at, -30).getTime());
+        receive(new Date(Math.min(earliest, move.at.getTime())));
+      }
       stock -= move.quantity;
       lastChange = move.at;
       if (move.kind === "dispensed") dispensed += move.quantity;

@@ -174,7 +174,7 @@ export function metricsFromPlan(plan: Plan): Metrics {
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 
   return {
-    counts: Object.fromEntries(Object.entries(counts).sort(([a], [b]) => a.localeCompare(b))),
+    counts: Object.fromEntries(Object.entries(counts).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
     financial: {
       invoices: moneySummary(rows.invoices),
       invoicesByStatus: byStatus,

@@ -98,8 +98,16 @@ export async function resetSyntheticDataset(db: Database, datasetId: string): Pr
 
     const predicates = await scopedPredicates(tx as unknown as Database, practice.id);
     const tables = [...predicates.keys()].sort();
+    // Count every base table, not only the scoped ones, so a cascade into an
+    // unrelated table would be caught and rolled back.
+    const allTables = (
+      (await tx.execute(sql`
+        select table_name as name from information_schema.tables
+        where table_schema = 'public' and table_type = 'BASE TABLE' order by 1
+      `)) as unknown as { name: string }[]
+    ).map((r) => r.name);
     const totalsBefore = new Map<string, number>();
-    for (const table of tables) {
+    for (const table of allTables) {
       const [row] = (await tx.execute(sql.raw(`select count(*)::int as n from ${ident(table)}`))) as unknown as { n: number }[];
       totalsBefore.set(table, row!.n);
     }
@@ -110,9 +118,11 @@ export async function resetSyntheticDataset(db: Database, datasetId: string): Pr
     const [deleted] = (await tx.execute(sql.raw(`with ${ctes.join(",\n")} select ${selects.join(", ")}`))) as unknown as Record<string, number>[];
 
     let otherRowsUnchanged = true;
-    for (const table of tables) {
+    for (const table of allTables) {
       const [row] = (await tx.execute(sql.raw(`select count(*)::int as n from ${ident(table)}`))) as unknown as { n: number }[];
-      if (row!.n !== totalsBefore.get(table)! - deleted![table]!) otherRowsUnchanged = false;
+      if (row!.n !== totalsBefore.get(table)! - (deleted![table] ?? 0)) otherRowsUnchanged = false;
+    }
+    for (const table of tables) {
       const [left] = (await tx.execute(
         sql.raw(`select count(*)::int as n from ${ident(table)} where ${predicates.get(table)}`),
       )) as unknown as { n: number }[];

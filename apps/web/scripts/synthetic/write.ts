@@ -4,7 +4,8 @@
  * Safety:
  * - refuses when the dataset already exists (database marker) or its expected
  *   results file exists, unless `--replace` is passed;
- * - with `--replace`, removes only that dataset first (see reset.ts);
+ * - with `--replace`, removes only that dataset, in the same transaction as
+ *   the insert, so a failure leaves the previous dataset in place (reset.ts);
  * - the expected-results file is written before commit, so a failed write
  *   rolls the database back and nothing is left half-generated.
  *
@@ -13,7 +14,7 @@
  * the invoice line exists; it sets `updated_at` explicitly so Drizzle's
  * `$onUpdate` never substitutes the current time.
  */
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import bcrypt from "bcryptjs";
 import { and, eq } from "drizzle-orm";
@@ -78,13 +79,14 @@ export async function writePlan(db: Database, plan: Plan, expected: ExpectedResu
         ". Refusing to overwrite. Re-run with --replace, or reset it first.",
     );
   }
-  let resetReport = null;
-  if (existing.length) resetReport = await resetSyntheticDataset(db, plan.config.datasetId);
 
   const passwordHash = await bcrypt.hash(options.staffPassword, 10);
   const { rows } = plan;
-  await db.transaction(async (tx) => {
+  const resetReport = await db.transaction(async (tx) => {
     const t = tx as unknown as Database;
+    // --replace removes the old dataset inside this transaction (as a
+    // savepoint), so a failed insert keeps the previous dataset intact.
+    const report = existing.length ? await resetSyntheticDataset(t, plan.config.datasetId) : null;
     await insertAll(t, practices, rows.practices);
     await insertAll(t, locations, rows.locations);
     await insertAll(t, users, rows.users.map((u) => ({ ...u, passwordHash })));
@@ -138,7 +140,13 @@ export async function writePlan(db: Database, plan: Plan, expected: ExpectedResu
     mkdirSync(dirname(options.expectedPath), { recursive: true });
     const temporary = join(dirname(options.expectedPath), `.expected-results.${process.pid}.tmp`);
     writeFileSync(temporary, `${JSON.stringify(expected, null, 2)}\n`, { mode: 0o644 });
-    renameSync(temporary, options.expectedPath);
+    try {
+      renameSync(temporary, options.expectedPath);
+    } catch (error) {
+      rmSync(temporary, { force: true });
+      throw error;
+    }
+    return report;
   });
   return { resetReport };
 }

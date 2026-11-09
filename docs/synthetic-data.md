@@ -58,9 +58,10 @@ the generator at a shared or hosted database.
   `--allow-remote-db` for an isolated sandbox.
 - **No accidental overwrite.** `generate` refuses when the dataset already
   exists in the database or its answer key exists on disk. `--replace` removes
-  that dataset first.
+  that dataset inside the same transaction as the new insert.
 - **All-or-nothing.** The dataset is inserted in one transaction, and the
-  answer key is written before commit. A failure leaves nothing behind.
+  answer key is written before commit. A failure leaves nothing behind, and a
+  failed `--replace` leaves the previous dataset in place.
 - **Scoped reset.**
 
   ```bash
@@ -69,8 +70,8 @@ the generator at a shared or hosted database.
 
   This deletes only the practice carrying that dataset marker, its rows, and
   rows that reference them through foreign keys (for example, records added
-  while trying the dataset out in the UI). It verifies afterwards that no
-  other practice's rows changed. Append-only
+  while trying the dataset out in the UI). Before committing, it re-counts
+  every table and rolls back if any row outside that scope was removed. Append-only
   ledgers (prescription events, dispense charges, finalized SOAP notes)
   accept deletes only through the database owner's `app.ledger_maintenance`
   session flag; the reset uses that path for this practice's rows and never
@@ -89,8 +90,8 @@ write set with explicit historical timestamps, and lets the database's own
 triggers and checks validate every row:
 
 - **Appointments** are booked into practice-local slots (converted to UTC
-  across daylight-saving changes) with a booking time before the visit, and end
-  checked out, cancelled or no-show.
+  across daylight-saving changes) at least 15 minutes after the booking was
+  made, and end checked out, cancelled (before the start time) or no-show.
 - **Consultation notes** are inserted as finalized with explicit
   `created_at`, `finalized_at` and finalizer. The SOAP lifecycle trigger would
   otherwise default `finalized_at` to the time of insertion.
@@ -179,9 +180,11 @@ Apart from these, clinical, dispensing and financial records are consistent.
    invoice status, dispense-charge and invoice-line links, the dispensing
    ledger, written scripts never dispensed, one completed closeout per
    checked-out visit, no unresolved work items, the stock equation (opening +
-   receipts − dispensed − retail = closing), every timestamp within the
-   historical window, labels present, and no answer-key content in the
-   database;
+   receipts − dispensed − retail = closing), the stock ledger replayed in time
+   order (never negative, each receipt's recorded balance correct), every
+   timestamp within the historical window, event ordering (bookings before
+   visits, updates after creation, notes, invoices, payments and follow-ups in
+   sequence), labels present, and no answer-key content in the database;
 3. runs SQL detectors that must find exactly the planted discrepancies and
    nothing else.
 
