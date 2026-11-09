@@ -191,6 +191,24 @@ Apart from these, clinical, dispensing and financial records are consistent.
 It writes `validation-report.json` next to the answer key and exits non-zero
 on any failure.
 
+## Verifying the extraction API
+
+With the app running (`pnpm dev`, or a production build with `next start`):
+
+```bash
+pnpm synthetic:verify-api --preset sample-1m            # read-only checks
+pnpm synthetic:verify-api --preset sample-1m --amend    # also amends records; regenerate afterwards
+```
+
+This creates temporary API keys for the synthetic practice only (deleted at
+the end), pages every [read-only extraction endpoint](api/README.md#read-only-extraction-endpoints),
+and checks that there are no gaps or duplicates, that counts, totals and stock
+reconcile with the answer key, that missing, invalid and under-scoped keys are
+refused, and that no other practice's records are visible. With `--amend` it
+adds a note addendum, a payment and an invoice-line replacement, then checks
+that `updated_since` returns exactly those changes. The answer key is read from
+disk by this command; the API never serves it.
+
 ## Limitations
 
 - **Species and herd workflows.** Only companion species are generated. The

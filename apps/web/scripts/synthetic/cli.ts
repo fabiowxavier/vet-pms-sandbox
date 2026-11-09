@@ -6,6 +6,7 @@
  *   pnpm synthetic:generate --preset sample-1m   # insert + write expected results
  *   pnpm synthetic:validate --preset sample-1m   # compare database to expected results
  *   pnpm synthetic:reset    --preset sample-1m --confirm sample-1m
+ *   pnpm synthetic:verify-api --preset sample-1m [--amend]   # extraction API checks (app must be running)
  *
  * See docs/synthetic-data.md.
  */
@@ -28,6 +29,12 @@ function loadRootEnv() {
 }
 
 async function main() {
+  if (process.argv[2] === "verify-api") {
+    loadRootEnv();
+    const { verifyApi } = await import("./verify-api");
+    if (!(await verifyApi(process.argv.slice(3)))) process.exitCode = 1;
+    return;
+  }
   const today = new Date().toISOString().slice(0, 10);
   const args = parseSyntheticArgs(process.argv.slice(2), today);
   const outDir = resolve(REPO_ROOT, args.outDir);
