@@ -272,14 +272,18 @@ Grant only the scopes an integration needs. `*` includes all of them.
 - **Identifiers.** Every record has a stable UUID `id` and references related
   records by id (`patient_id`, `invoice_id`, `prescription_id`, …).
 - **Timestamps.** `created_at`, `updated_at`, `deleted_at` (null unless
-  soft-deleted) and `changed_at` are ISO-8601 UTC. Dates are `YYYY-MM-DD`.
+  soft-deleted) and `changed_at` are ISO-8601 UTC with millisecond precision
+  (`2026-10-14T18:22:03.512Z`). Sub-millisecond digits are truncated, never
+  rounded up, so passing a record's `changed_at` back as `updated_since`
+  (inclusive) always includes that record. Dates are `YYYY-MM-DD`.
 - **Money** is a decimal string (`"45.00"`), never a float. Quantities are
   numbers (up to three decimals).
 - **Ordering and paging.** Lists are ordered by `(changed_at, id)` and paged
   with an opaque cursor. Request `?limit=` (1–100, default 25) and pass
-  `pagination.next_cursor` as `?cursor=` until it is `null`. Unlike offset
-  paging, a cursor never skips or repeats a record because rows were inserted
-  or deleted between requests. `offset` is rejected on these endpoints.
+  `pagination.next_cursor` as `?cursor=` until it is `null`. Each page is a
+  separate read, not a snapshot of the whole list: see
+  [what is guaranteed while records change](#extraction-while-records-change).
+  `offset` is rejected on these endpoints.
 - **Totals.** `pagination.total` counts every record matching the filters (not
   just the remaining pages), so a full extraction can be checked against it.
 
@@ -306,12 +310,15 @@ belongs to it** changed.
 
 To keep a copy current:
 
-1. Do a full extraction once (`?include_deleted=true`), and remember the
-   highest `changed_at` you received.
-2. Later, request `?updated_since=<that value minus a safety overlap>&include_deleted=true`
-   and page to the end. Upsert every record by `id`. A record can arrive more
-   than once (for example if it changed while you were paging); treat the
-   latest `changed_at` as authoritative.
+1. Note the time **before** you start a pass (`pass_started_at`), then page
+   to the end with `?include_deleted=true` (plus `updated_since` after the
+   first pass).
+2. Upsert every record by `id`, keeping the version with the latest
+   `changed_at`. The same record can arrive more than once in a pass.
+3. Start the next pass with `updated_since = pass_started_at − overlap`, where
+   the overlap is longer than the longest write transaction you expect (5
+   minutes is a comfortable default). Do not use the highest `changed_at` you
+   received as the next watermark on its own: see below.
 
 How each kind of change appears:
 
@@ -327,7 +334,8 @@ How each kind of change appears:
     returns the removed lines as tombstones and the new lines as new records,
     and the parent invoice reappears with the current `lines` and totals;
   - a payment or adjustment reappears on its own endpoint and also bumps its
-    invoice's `changed_at`;
+    invoice's `changed_at`. A refund is a new payment record with a negative
+    `amount`, not a change to the original payment;
   - a prescription status change or refill appends to `events`.
 - **Deleted records**: OpenVPM soft-deletes (sets `deleted_at`). Deleted
   records are hidden unless `include_deleted=true`, which returns them as
@@ -335,13 +343,42 @@ How each kind of change appears:
   with `status: "void"`, and its stock-affecting lines are marked
   `reversed: true` in `/stock-movements`.
 
-#### Limitations
+#### Extraction while records change
 
-- **Safety overlap.** `changed_at` is assigned when a change is made, not when
-  its transaction commits. A long-running transaction can commit a change
-  stamped earlier than records you have already read. Re-reading a few
-  minutes of overlap (and de-duplicating by `id`) closes that gap in practice;
-  it is not a guaranteed exactly-once feed.
+Each page is read in its own transaction, so a pass is not a point-in-time
+snapshot. Tested behaviour (see `server/__tests__/extraction-sync.integration.test.ts`
+and `pnpm synthetic:verify-api --concurrency`):
+
+**Guaranteed within one pass**
+- A record that was committed before the pass started and is not changed
+  during it is returned exactly once.
+- A record created or changed (and committed) before the pass reaches the end
+  is returned with that newer version, because its `changed_at` moves it
+  ahead of the cursor.
+
+**Expected within one pass (handle by de-duplicating)**
+- A record changed **after** it was read is returned again later in the same
+  pass (a duplicate with a later `changed_at`). Keep the latest version.
+- `pagination.total` can change between pages.
+
+**Recovered by the next pass, not by the current one**
+- `changed_at` is set when a change is written, not when its transaction
+  commits. A change that commits after the pass has moved past its
+  `changed_at` is invisible to that pass, and a naive next watermark (the
+  highest `changed_at` received) misses it permanently. Starting the next pass
+  from `pass_started_at − overlap` returns it. In the tests, the late commit
+  was missed by the naive watermark and recovered by a 5-minute overlap, after
+  which the merged copy matched the source tables exactly.
+
+**Remaining limitations**
+- This is at-least-once delivery, not exactly-once: expect duplicates and
+  upsert by `id`.
+- A write transaction that stays open longer than your overlap window can
+  still be missed. Size the overlap to your environment.
+- A copy is only as current as its last completed pass; there is no change
+  stream or webhook for these resources.
+
+#### Limitations
 - **Hard deletes are not visible.** Draft SOAP notes can be discarded
   outright, so only finalized notes are exposed. Database-level maintenance
   (for example removing a synthetic dataset) is not reported.
@@ -405,7 +442,7 @@ curl "https://pms.example.com/api/v1/invoices?limit=100&include_deleted=true" \
 curl "https://pms.example.com/api/v1/invoices?limit=100&include_deleted=true&cursor=NEXT_CURSOR" \
   -H "Authorization: Bearer ovpm_YOUR_KEY_HERE"
 
-# Everything that changed since the last sync (with a 5-minute overlap)
+# Everything that changed since the last pass started, with a 5-minute overlap
 curl "https://pms.example.com/api/v1/soap-notes?updated_since=2026-10-31T23:55:00Z&include_deleted=true&limit=100" \
   -H "Authorization: Bearer ovpm_YOUR_KEY_HERE"
 

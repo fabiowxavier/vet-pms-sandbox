@@ -21,7 +21,7 @@ vi.mock("@/lib/tenant-db", () => ({
     }),
 }));
 
-const { decodeCursor, encodeCursor, parseExtractionParams, listRoute, getRoute } = await import("../extraction");
+const { decodeCursor, encodeCursor, parseExtractionParams, listRoute, getRoute, toIsoTimestamp } = await import("../extraction");
 const { invoicesResource, soapNotesResource, prescriptionsResource, dispensingEventsResource } = await import(
   "../../openvpm/extraction-resources"
 );
@@ -69,6 +69,23 @@ describe("extraction parameters", () => {
     expect(parse("include_deleted=yes").ok).toBe(false);
     expect(parse("patient_id=nope").ok).toBe(false);
     expect(parse("unknown_filter=1").ok).toBe(true);
+  });
+});
+
+describe("timestamp normalisation", () => {
+  it("returns ISO-8601 UTC whatever form the driver returns", () => {
+    // Drizzle's postgres-js driver returns raw timestamptz text from execute().
+    expect(toIsoTimestamp("2026-11-09 21:29:57.885053+00")).toBe("2026-11-09T21:29:57.885Z");
+    expect(toIsoTimestamp("2026-11-09 16:29:57.885999-05")).toBe("2026-11-09T21:29:57.885Z");
+    expect(toIsoTimestamp("2026-11-10 03:00:00+05:30")).toBe("2026-11-09T21:30:00.000Z");
+    expect(toIsoTimestamp("2026-11-09 21:29:57+00")).toBe("2026-11-09T21:29:57.000Z");
+    expect(toIsoTimestamp(new Date("2026-11-09T21:29:57.885Z"))).toBe("2026-11-09T21:29:57.885Z");
+    expect(toIsoTimestamp(null)).toBeNull();
+    expect(() => toIsoTimestamp("yesterday")).toThrow(/Unexpected timestamp/);
+  });
+
+  it("truncates rather than rounds sub-millisecond digits so updated_since stays inclusive", () => {
+    expect(toIsoTimestamp("2026-11-09 21:29:57.999999+00")).toBe("2026-11-09T21:29:57.999Z");
   });
 });
 

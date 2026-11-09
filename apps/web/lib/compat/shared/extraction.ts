@@ -12,9 +12,13 @@ import { isUuid } from "./validation";
 /**
  * Read-only extraction endpoints (notes, billing, catalogue, prescriptions,
  * dispensing, stock). Unlike the offset-paged list endpoints, these use a
- * keyset cursor over (changed_at, id), so paging through a changing table never
- * skips or repeats a record because of shifting offsets, and the same cursor
- * position supports incremental extraction with `updated_since`.
+ * keyset cursor over (changed_at, id): inserts and deletes elsewhere in the
+ * list cannot shift a record past the cursor, and the same ordering supports
+ * incremental extraction with `updated_since`. Each page is still a separate
+ * read: a record changed after it was read is returned again later, and a
+ * change that commits after the cursor passed its changed_at is only picked up
+ * by a later pass started with an overlap window (docs/api/README.md,
+ * "Extraction while records change").
  *
  * `changed_at` is the latest time the record or anything that belongs to it
  * changed (for example a SOAP note's addenda, or an invoice's lines and
@@ -91,6 +95,34 @@ export function parseExtractionParams(
   }
 
   return { ok: true, params: { limit, cursor, updatedSince, includeDeleted: rawDeleted === "true", filters } };
+}
+
+const PG_TIMESTAMP = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}(?::?\d{2})?)$/;
+
+/**
+ * Normalise a timestamp to ISO-8601 UTC with millisecond precision.
+ *
+ * Raw `db.execute()` results do not go through Drizzle's column mappers, and
+ * the postgres-js driver Drizzle configures returns timestamptz values as
+ * PostgreSQL text (for example "2026-10-01 13:00:00.123456+00", or another
+ * offset depending on the session TimeZone). The API must not leak that
+ * driver detail, so every timestamp is normalised here. Sub-millisecond
+ * digits are truncated, never rounded up, so a returned `changed_at` used as
+ * `updated_since` (inclusive) always includes the record it came from.
+ */
+export function toIsoTimestamp(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return value.toISOString();
+  const match = PG_TIMESTAMP.exec(String(value));
+  if (!match) throw new Error(`Unexpected timestamp format from the database: ${String(value).slice(0, 40)}`);
+  const [, date, time, fraction = "", zone] = match;
+  const millis = `.${fraction.slice(1, 4).padEnd(3, "0")}`;
+  let offset = zone!;
+  if (offset !== "Z") {
+    const digits = offset.slice(1).replace(":", "");
+    offset = `${offset[0]}${digits.slice(0, 2)}:${(digits.slice(2) || "00").padEnd(2, "0")}`;
+  }
+  return new Date(`${date}T${time}${millis}${offset}`).toISOString();
 }
 
 /** ISO-8601 (millisecond, UTC) rendering used inside nested JSON. */

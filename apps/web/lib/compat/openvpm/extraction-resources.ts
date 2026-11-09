@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { ExtractionResource } from "@/lib/compat/shared/extraction";
-import { isoSql } from "@/lib/compat/shared/extraction";
+import { isoSql, toIsoTimestamp } from "@/lib/compat/shared/extraction";
 
 /**
  * Read-only extraction resources for the v1 API. Each base query is scoped to
@@ -12,7 +12,7 @@ import { isoSql } from "@/lib/compat/shared/extraction";
 
 type Row = Record<string, unknown>;
 
-const iso = (value: unknown): string | null => (value instanceof Date ? value.toISOString() : (value as string | null) ?? null);
+const iso = toIsoTimestamp;
 const num = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));
 const str = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
 
