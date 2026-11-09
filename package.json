@@ -4,6 +4,7 @@
   "scripts": {
     "build": "turbo build",
     "dev": "turbo dev",
+    "start:local": "pnpm --filter @openpims/web start:local",
     "lint": "turbo lint",
     "type-check": "turbo type-check",
     "test": "turbo test",

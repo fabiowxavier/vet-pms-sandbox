@@ -58,6 +58,11 @@ async function main() {
     const expected = expectedResultsFromPlan(plan);
     const { writePlan } = await import("./write");
     const password = process.env.SYNTHETIC_STAFF_PASSWORD || "password123";
+    if (!process.env.SYNTHETIC_STAFF_PASSWORD) {
+      console.warn(
+        "WARNING: SYNTHETIC_STAFF_PASSWORD is not set, so the synthetic staff accounts use the public demo password. Set your own before generating if anyone else can use this computer.",
+      );
+    }
     const { resetReport } = await writePlan(db, plan, expected, {
       replace: args.replace,
       expectedPath,
@@ -72,7 +77,7 @@ async function main() {
     console.log(`  window     ${config.startDate} .. ${config.endDate} (${config.timezone}), seed "${config.seed}"`);
     console.log(`  records    ${expected.metrics.counts.appointments} appointments, ${expected.metrics.counts.soapNotes} notes, ${expected.metrics.counts.invoices} invoices, ${expected.metrics.counts.payments} payments`);
     console.log(`  expected   ${expectedPath}`);
-    console.log(`  sign in    ${plan.staffEmails.vet1} (veterinarian), ${plan.staffEmails.admin} (admin); password from SYNTHETIC_STAFF_PASSWORD or the local default`);
+    console.log(`  sign in    ${plan.staffEmails.vet1} (veterinarian), ${plan.staffEmails.admin} (admin); password ${process.env.SYNTHETIC_STAFF_PASSWORD ? "from SYNTHETIC_STAFF_PASSWORD (not shown)" : "is the public demo default"}`);
     return;
   }
 
